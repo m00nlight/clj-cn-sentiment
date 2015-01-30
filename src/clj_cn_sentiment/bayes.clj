@@ -2,7 +2,7 @@
   (require [clojure.string :as s]))
 
 
-(defn- count->probability
+(defn count->probability
   "Take an hash map contain the number of occurance in each class,
 return the posterior probabilities. The priori probabilities are 
 equal for each class."
