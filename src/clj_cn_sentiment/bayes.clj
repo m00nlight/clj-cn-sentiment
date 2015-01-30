@@ -13,3 +13,12 @@ equal for each class."
     (reduce #(assoc %1 %2 (/ (* (/ 1.0 n) (h %2))
                              (/ t n)))
             {} (keys h))))
+
+
+(defn bayes->joint-probability
+  "Calculate joint probability. With the estimate posterior probability.
+Type: [Double] -> Double -> Double"
+  [probs priori]
+  (let [a (apply * probs)
+        b (apply * (map #(- 1.0 %) probs))]
+    (/ (* a priori)  (+ (* a priori) (* b (- 1.0 priori))))))

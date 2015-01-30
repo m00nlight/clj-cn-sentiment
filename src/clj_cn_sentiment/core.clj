@@ -59,16 +59,21 @@ model."
                (map #(s/split % #"\t") freq)))))
 
 
-(def default-model nil)
+(def default-model (load-model))
 
 (defn classify
   "Classify the input text, and give the probability of pos and neg."
   ([text] (classify text default-model default-priori))
   ([text model priori]
-     (let [words (seg/mmseg text)
+     (let [words (filter #(>= (count %) 2) (seg/mmseg text))
            probs (sort-by #(- (get-in % [:prob :negative]))
                           (map (fn [x] {:word x,
                                         :prob (get model x {:positive 0.5
                                                             :negative 0.5})})
-                               words))]
-       )))
+                               words))
+           nums (max 5 (int (* (count probs) 0.2)))
+           ret (bayes/bayes->joint-probability
+                (map #(get-in % [:prob :negative]) (take nums probs))
+                (:negative priori))]
+       (println probs)
+       {:negative ret, :positive (- 1.0 ret)})))
