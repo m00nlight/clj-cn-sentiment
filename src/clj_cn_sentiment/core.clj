@@ -4,7 +4,7 @@
            [clj-cn-sentiment.bayes :as bayes]
            [clj-cn-sentiment.segmentation :as seg]))
 
-(def default-priori {:positive 0.728 :negative 0.2719})
+(def default-priori {:positive 0.5 :negative 0.5})
 
 (def default-rate (/ (:positive default-priori) (:negative default-priori)))
 
