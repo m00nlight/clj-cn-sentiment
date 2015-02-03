@@ -4,9 +4,9 @@
            [clj-cn-sentiment.bayes :as bayes]
            [clj-cn-sentiment.segmentation :as seg]))
 
-(def default-priori {:positive 0.5 :negative 0.5})
+(def default-priori {:positive 0.728 :negative 0.272})
 
-(def default-rate (/ (:positive default-priori) (:negative default-priori)))
+(def default-rate 2.6765)
 
 (defn train
   "Train the Bayes classifier on positive and negative sentences. It take
@@ -57,8 +57,8 @@ model."
            ;; words, not useful for classify
            freq (filter #(or (>= (count (first %)) 2)
                              (and (= (count (first %)) 1)
-                                  (not (and (> (read-string (second %)) 2000)
-                                            (> (read-string (last %)) 2000)))))
+                                  (not (and (> (read-string (second %)) 1500)
+                                            (> (read-string (last %)) 1500)))))
                         temp)]
        (reduce #(assoc %1 (first %2)
                        (-> {:positive (/ (read-string (second %2)) rate)
@@ -106,7 +106,7 @@ probability of 痛快 as the probability of 不痛快."
                                         (- (get-in % [:prob :negative] 0.5)
                                            (get-in % [:prob :positive] 0.5)))
                                        0.6))) tmp)
-           nums (max 5 (int (* 0.15 (count probs))))
+           nums (max 10 (int (* 0.15 (count probs))))
            ret-neg (bayes/bayes->joint-probability
                     (map #(get-in % [:prob :negative]) (take nums probs))
                     (:negative priori))
@@ -114,10 +114,15 @@ probability of 痛快 as the probability of 不痛快."
                     (map #(get-in % [:prob :positive])
                          (take nums (reverse probs)))
                     (:positive priori))]
-       (println probs)
+       ;; (println ret-pos)
+       ;; (println ret-neg)
+       ;; (println probs)
+       ;; {:positive (- 1.0 ret-neg)
+       ;;  :negative ret-neg}
        (if (> ret-pos ret-neg)
          {:positive ret-pos, :negative (- 1.0 ret-pos)}
-         {:positive (- 1.0 ret-neg), :negative ret-neg}))))
+         {:positive (- 1.0 ret-neg), :negative ret-neg})
+       )))
 
 
 (defn evaluate
