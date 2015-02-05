@@ -22,3 +22,22 @@ Type: [Double] -> Double -> Double"
   (let [a (apply * probs)
         b (apply * (map #(- 1.0 %) probs))]
     (/ (* a priori)  (+ (* a priori) (* b (- 1.0 priori))))))
+
+(defn normalize
+  [res]
+  (let [total (reduce + (vals res))]
+    (reduce #(assoc %1 %2 (/ (%2 res) total)) {} (keys res))))
+
+(defn bayes->probability-distribution
+  "Calculate the probability distribution."
+  [probs priori]
+  (->
+   (apply merge-with * (cons priori (map #(get % :prob) probs)))
+   ;; (reduce (fn [acc x]
+   ;;           (assoc acc x (bayes->joint-probability
+   ;;                         (map #(get-in % [:prob x]) probs)
+   ;;                         (get priori x))))
+   ;;         {} [:positive :negative :neutral])
+      normalize))
+
+

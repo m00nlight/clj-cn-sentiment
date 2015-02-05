@@ -4,9 +4,8 @@
            [clj-cn-sentiment.bayes :as bayes]
            [clj-cn-sentiment.segmentation :as seg]))
 
-(def default-priori {:positive 0.728 :negative 0.272})
+(def default-priori {:positive 0.34 :negative 0.33, :neutral 0.33})
 
-(def default-rate 2.6765)
 
 (defn train
   "Train the Bayes classifier on positive and negative sentences. It take
@@ -24,10 +23,11 @@ follow an \t@\t then with the actual sentence."
   [^String training-file ^String output-path]
   (with-open [rdr (io/reader training-file)]
     (let [freq (reduce (fn [acc line]
-                         (let [[pos-or-neg sentence] (s/split line #"\t@\t")
+                         (let [[pos-neg-neu sentence] (s/split line #"\t@\t")
                                words (seg/mmseg sentence)]
                            (reduce #(update-in
-                                     %1 [%2 (keyword pos-or-neg)] (fnil inc 0))
+                                     %1 [%2 (keyword pos-neg-neu)]
+                                     (fnil inc 0))
                                    acc words)))
                        {}
                        (line-seq rdr))]
@@ -38,15 +38,16 @@ follow an \t@\t then with the actual sentence."
                               (:positive (second word-info) 0)
                               "\t"
                               (:negative (second word-info) 0)
+                              "\t"
+                              (:neutral (second word-info) 0)
                               "\n"))))))))
 
 (defn load-model
   "Load the training model for usage. Rate is the rate of positive example 
 over the negative example in the training data. It is used for training on
-an balanced corpus. The default-rate is the rate of value traing the default
-model."
-  ([] (load-model "default.model" default-rate))
-  ([model-file rate]
+an corpus."
+  ([] (load-model "default.model"))
+  ([model-file]
      (let [temp (map #(s/split % #"\t")
                      (s/split (slurp (if (= model-file "default.model")
                                        (io/resource "default.model")
@@ -55,14 +56,22 @@ model."
            ;; filter out one character words with occurance in positive and
            ;; negative are both more than 2000 times, it is maybe an normal
            ;; words, not useful for classify
-           freq (filter #(or (>= (count (first %)) 2)
-                             (and (= (count (first %)) 1)
-                                  (not (and (> (read-string (second %)) 1500)
-                                            (> (read-string (last %)) 1500)))))
-                        temp)]
+           total-pos (reduce + (map #(read-string (second %)) temp))
+           total-neg (reduce + (map #(read-string (nth % 2)) temp))
+           total-neu (reduce + (map #(read-string (last %)) temp))
+           freq (filter
+                 #(or (>= (count (first %)) 2)
+                      (and (= (count (first %)) 1)
+                           (not (and (> (read-string (second %)) 5000)
+                                     (> (read-string (nth % 2)) 5000)))))
+                 temp)]
        (reduce #(assoc %1 (first %2)
-                       (-> {:positive (/ (read-string (second %2)) rate)
-                            :negative (read-string (last %2))}
+                       (-> {:positive (max (/ (read-string (second %2))
+                                              total-pos) 1e-8)
+                            :negative (max (/ (read-string (nth %2 2))
+                                              total-neg) 1e-8)
+                            :neutral (max (/ (read-string (last %2))
+                                             total-neu) 1e-8)}
                            bayes/count->probability) )
                {}
                freq))))
@@ -85,43 +94,36 @@ probability of 痛快 as the probability of 不痛快."
    (contains? seg/cn-not-words (str (first word)))
    (let [w (apply str (rest word))]
      (if-let [m (get model w)]
-       {:positive (- 1.0 (:positive m))
-        :negative (- 1.0 (:negative m))}
-       {:positive 0.728 :negative 0.272}))
+       {:positive (- 1.0 (+ (:neutral m) (:negative m)))
+        :neutral (- 1.0 (+ (:positive m) (:negative m)))
+        :negative (- 1.0 (+ (:positive m) (:neutral m)))}
+       default-priori))
    ;; else, not in the model and the word is not start with negative character
-   :else {:positive 0.5, :negative 0.5}))
+   :else default-priori))
 
 (defn classify
   "Classify the input text, and give the probability of pos and neg."
   ([text] (classify text default-model default-priori))
   ([text model priori]
      (let [words (seg/mmseg text ) 
-           tmp (sort-by #(- (get-in % [:prob :negative]))
+           probs (sort-by #(- (get-in % [:prob :negative]))
                           (map (fn [x] {:word x,
                                         :prob (get-prob-helper x model)})
                                words))
-           probs (filter #(or (>= (count (:word %)) 2)
-                              (and (= (count (:word %)) 1)
-                                   (>= (Math/abs
-                                        (- (get-in % [:prob :negative] 0.5)
-                                           (get-in % [:prob :positive] 0.5)))
-                                       0.6))) tmp)
-           nums (max 10 (int (* 0.15 (count probs))))
-           ret-neg (bayes/bayes->joint-probability
-                    (map #(get-in % [:prob :negative]) (take nums probs))
-                    (:negative priori))
-           ret-pos (bayes/bayes->joint-probability
-                    (map #(get-in % [:prob :positive])
-                         (take nums (reverse probs)))
-                    (:positive priori))]
-       ;; (println ret-pos)
-       ;; (println ret-neg)
-       ;; (println probs)
-       ;; {:positive (- 1.0 ret-neg)
-       ;;  :negative ret-neg}
-       (if (> ret-pos ret-neg)
-         {:positive ret-pos, :negative (- 1.0 ret-pos)}
-         {:positive (- 1.0 ret-neg), :negative ret-neg})
+           nums (max 4 (int (* 0.15 (count probs))))
+           ret-neg (bayes/bayes->probability-distribution
+                    (take nums probs)
+                    priori)
+           ret-pos (bayes/bayes->probability-distribution
+                    (take nums (sort-by #(- (get-in % [:prob :positive]))
+                                       probs))
+                    priori)]
+       (bayes/bayes->probability-distribution
+        probs
+        priori)
+       ;; (if (> (:positive ret-pos) (:negative ret-neg))
+       ;;   ret-pos
+       ;;   ret-neg)
        )))
 
 
@@ -136,7 +138,7 @@ probability of 痛快 as the probability of 不痛快."
     (with-open [rdr (io/reader file)]
       (doseq [line (line-seq rdr)]
         (let [[score text] (s/split line #"\|")
-              {pos :positive, neg :negative} (classify text)]
+              {pos :positive, neg :negative, neu :neutral} (classify text)]
           (cond
            ;; positive result
            (= score "1")
@@ -146,8 +148,8 @@ probability of 痛快 as the probability of 不痛快."
                (swap! p2 inc)
                (swap! p3 inc))
              (do
-               (println (str score "\t" text))
-               (println {:positive pos, :negative neg})
+               (println line)
+               (println {:positive pos, :negative neg, :neutral neu})
                (swap! p2 inc)
                (swap! n3 inc)))
            ;; negative result
@@ -158,8 +160,8 @@ probability of 痛快 as the probability of 不痛快."
                (swap! n2 inc)
                (swap! n3 inc))
              (do
-               (println (str score "\t" text))
-               (println {:positive pos, :negative neg})
+               (println line)
+               (println {:positive pos, :negative neg, :neutral neu})
                (swap! n2 inc)
                (swap! p3 inc))))))
       (let [p-pre (/ @p1 (* 1.0 @p3))
