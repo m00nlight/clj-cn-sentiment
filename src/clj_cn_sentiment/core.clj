@@ -53,6 +53,10 @@ an corpus."
                                        (io/resource "default.model")
                                        (io/file model-file)))
                               #"\n"))
+           coll (map (fn [[word pos neg neu]]
+                       (into [] [word (read-string pos) (read-string neg)
+                                 (read-string neu)]))
+                     temp)
            ;; filter out one character words with occurance in positive and
            ;; negative are both more than 2000 times, it is maybe an normal
            ;; words, not useful for classify
