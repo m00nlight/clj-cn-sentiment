@@ -2,9 +2,10 @@
   (require [clojure.java.io :as io]
            [clojure.string :as s]
            [clj-cn-sentiment.bayes :as bayes]
+           [clj-cn-sentiment.feature :as feature]
            [clj-cn-sentiment.segmentation :as seg]))
 
-(def default-priori {:positive 0.34 :negative 0.33, :neutral 0.33})
+(def default-priori {:positive 1.0 :negative 1.0, :neutral 1.0})
 
 
 (defn train
@@ -46,42 +47,34 @@ follow an \t@\t then with the actual sentence."
   "Load the training model for usage. Rate is the rate of positive example 
 over the negative example in the training data. It is used for training on
 an corpus."
-  ([] (load-model "default.model"))
-  ([model-file]
+  ([n] (load-model n "default.model"))
+  ([n model-file]
      (let [temp (map #(s/split % #"\t")
                      (s/split (slurp (if (= model-file "default.model")
                                        (io/resource "default.model")
                                        (io/file model-file)))
                               #"\n"))
-           coll (map (fn [[word pos neg neu]]
-                       (into [] [word (read-string pos) (read-string neg)
-                                 (read-string neu)]))
-                     temp)
            ;; filter out one character words with occurance in positive and
            ;; negative are both more than 2000 times, it is maybe an normal
            ;; words, not useful for classify
            total-pos (reduce + (map #(read-string (second %)) temp))
            total-neg (reduce + (map #(read-string (nth % 2)) temp))
            total-neu (reduce + (map #(read-string (last %)) temp))
-           freq (filter
-                 #(or (>= (count (first %)) 2)
-                      (and (= (count (first %)) 1)
-                           (not (and (> (read-string (second %)) 5000)
-                                     (> (read-string (nth % 2)) 5000)))))
-                 temp)]
+           freq (feature/feature-selection
+                 (map (fn [[word pos neg neu]]
+                        (into [] [word (read-string pos)
+                                  (read-string neg)
+                                  (read-string neu)])) temp) n)]
        (reduce #(assoc %1 (first %2)
-                       (-> {:positive (max (/ (read-string (second %2))
-                                              total-pos) 1e-8)
-                            :negative (max (/ (read-string (nth %2 2))
-                                              total-neg) 1e-8)
-                            :neutral (max (/ (read-string (last %2))
-                                             total-neu) 1e-8)}
-                           bayes/count->probability) )
+                       (-> {:positive (max (/ (second %2) total-pos) 1e-6)
+                            :negative (max (/ (nth %2 2) total-neg) 1e-6)
+                            :neutral (max (/ (last %2) total-neu) 1e-6)}
+                           bayes/count->probability))
                {}
                freq))))
 
 
-(def default-model (load-model))
+(def default-model (load-model 50000))
 
 (defn- get-prob-helper
   "Get the probability, if the probability is an negative phrase, and 
@@ -131,20 +124,22 @@ probability of 痛快 as the probability of 不痛快."
        )))
 
 
-(defn evaluate
-  [file]
-  (let [p1 (atom 0)  ;; positive correct result
-        p2 (atom 0)  ;; positive golden standard num
-        p3 (atom 0)  ;; positive classify number
+(defn evaluate-pos-neg
+  "Evaluate pos and neg precision and recall"
+  [n file]
+  (let [model (load-model n)
+        p1 (atom 0)
+        p2 (atom 0)
+        p3 (atom 0)
         n1 (atom 0)
         n2 (atom 0)
         n3 (atom 0)]
     (with-open [rdr (io/reader file)]
       (doseq [line (line-seq rdr)]
         (let [[score text] (s/split line #"\|")
-              {pos :positive, neg :negative, neu :neutral} (classify text)]
+              {pos :positive, neg :negative, neu :neutral}
+              (classify text model default-priori)]
           (cond
-           ;; positive result
            (= score "1")
            (if (> pos neg)
              (do
@@ -152,11 +147,8 @@ probability of 痛快 as the probability of 不痛快."
                (swap! p2 inc)
                (swap! p3 inc))
              (do
-               (println line)
-               (println {:positive pos, :negative neg, :neutral neu})
                (swap! p2 inc)
                (swap! n3 inc)))
-           ;; negative result
            (= score "-1")
            (if (> neg pos)
              (do
@@ -164,8 +156,6 @@ probability of 痛快 as the probability of 不痛快."
                (swap! n2 inc)
                (swap! n3 inc))
              (do
-               (println line)
-               (println {:positive pos, :negative neg, :neutral neu})
                (swap! n2 inc)
                (swap! p3 inc))))))
       (let [p-pre (/ @p1 (* 1.0 @p3))
@@ -180,3 +170,91 @@ probability of 痛快 as the probability of 不痛快."
         (println (str "negative precision: " n-pre))
         (println (str "negative recall   : " n-rec))
         (println (str "negative f1-score : " n-f1))))))
+
+(defn evaluate-pos-neg-neu
+  [n file]
+  (let [model (load-model n)
+        p1 (atom 0)
+        p2 (atom 0)
+        p3 (atom 0)
+        n1 (atom 0)
+        n2 (atom 0)
+        n3 (atom 0)
+        nn1 (atom 0)
+        nn2 (atom 0)
+        nn3 (atom 0)]
+    (with-open [rdr (io/reader file)]
+      (doseq [line (line-seq rdr)]
+        (let [[score text] (s/split line #"\|")
+              {pos :positive, neg :negative, neu :neutral}
+              (classify text model default-priori)]
+          (cond
+           (= score "1")
+           (if (and (> pos neg) (> pos neu))
+             (do
+               (swap! p1 inc)
+               (swap! p2 inc)
+               (swap! p3 inc))
+             (cond
+              (and (> neg pos) (> neg neu)) (do
+                                              (swap! p2 inc)
+                                              (swap! n3 inc))
+              :else (do (swap! p2 inc) (swap! nn3 inc))))
+           (= score "-1")
+           (if (and (> neg pos) (> neg neu))
+             (do
+               (swap! n1 inc)
+               (swap! n2 inc)
+               (swap! n3 inc))
+             (cond
+              (and (> pos neg) (> pos neu)) (do (swap! n2 inc) (swap! p3 inc))
+              :else (do (swap! n2 inc) (swap! nn3 inc))))
+           (= score "0")
+           (if (and (> neu pos) (> neu neg))
+             (do
+               (swap! nn1 inc)
+               (swap! nn2 inc)
+               (swap! nn3 inc))
+             (cond
+              (and (> pos neg) (> pos neu)) (do (swap! nn2 inc) (swap! p3 inc))
+              :else (do (swap! nn2 inc) (swap! n3 inc)))))))
+      (let [p-pre (/ @p1 (* 1.0 @p3))
+            p-rec (/ @p1 (* 1.0 @p2))
+            n-pre (/ @n1 (* 1.0 @n3))
+            n-rec (/ @n1 (* 1.0 @n2))
+            nn-pre (/ @nn1 (* 1.0 @nn2))
+            nn-rec (/ @nn1 (* 1.0 @nn3))
+            p-f1 (/ (* 2 p-pre p-rec) (+ p-pre p-rec))
+            n-f1 (/ (* 2 n-pre n-rec) (+ n-pre n-rec))
+            nn-f1 (/ (* 2 nn-pre nn-rec) (+ nn-pre nn-rec))]
+        (println (str "positive precision: " p-pre))
+        (println (str "positive recall   : " p-rec))
+        (println (str "positive f1-score : " p-f1))
+        (println (str "negative precision: " n-pre))
+        (println (str "negative recall   : " n-rec))
+        (println (str "negative f1-score : " n-f1))
+        (println (str "neutral precision : " nn-pre))
+        (println (str "neutral recall    : " nn-rec))
+        (println (str "neutral f1-score  : " nn-f1))))))
+
+
+(defn main
+  []
+  (doseq [n [100 1000 2000 3000 4000 5000 6000 7000 8000 9000 10000
+             20000 30000 40000 70000]]
+    (println "feature words numbers: " n)
+    (evaluate-pos-neg
+     n
+     "/home/m00nlight/Documents/work/sentiment/input-tweet.txt")
+    (println "=====================================================")))
+
+
+(defn main2
+  []
+  (doseq [n [100 1000 2000 3000 4000 5000 6000 7000 8000 9000 10000
+             20000 30000 40000 70000]]
+    (println "feature words numbers: " n)
+    (evaluate-pos-neg-neu
+     n
+     "/home/m00nlight/Documents/work/sentiment/input-tweet.txt")
+    (println "=====================================================")))
